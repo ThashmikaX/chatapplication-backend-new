@@ -9,7 +9,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: "http://13.51.162.118:3000", // Frontend URL
+        origin: "http://13.51.162.118:3000", // Frontend URI
         methods: ["GET", "POST"]
     }
 });
