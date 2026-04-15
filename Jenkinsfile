@@ -2,59 +2,55 @@ pipeline {
     agent any
 
     environment {
-        PATH = "/usr/local/bin:/opt/homebrew/bin:$PATH"  // Ensure required binaries are in the path
+        // WSL/Linux-friendly PATH. Remove macOS Homebrew path.
+        PATH = "/usr/local/bin:/usr/bin:/bin:${env.PATH}"
+
+        DOCKER_HOST = "unix:///var/run/docker.sock"
     }
 
     stages {
-        stage('Check Docker Installation on Jenkins') {
+        stage('Check Docker Installation on Jenkins (WSL)') {
             steps {
                 script {
-                    if (sh(script: 'which docker', returnStatus: true) == 0) {
-                        echo 'Docker is installed on Jenkins!'
-                        sh 'docker --version'
+                    if (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0) {
+                        echo 'Docker CLI is available in Jenkins WSL environment.'
+                        sh '''
+                            set -e
+                            docker --version
+                            docker info >/dev/null 2>&1 || {
+                                echo "Docker daemon is not reachable from Jenkins in WSL."
+                                echo "Make sure Docker Desktop integration for WSL is enabled"
+                                echo "or that the Jenkins user can access /var/run/docker.sock."
+                                exit 1
+                            }
+                        '''
                     } else {
-                        error 'Docker is not installed on Jenkins. Please install Docker.'
+                        error '''
+Docker CLI is not installed in the Jenkins WSL environment.
+Install Docker CLI inside WSL, or enable Docker Desktop WSL integration.
+'''
                     }
-                }
-            }
-        }
-
-        stage('Check and Install Docker on EC2') {
-            steps {
-                sshagent(['aws1_ec2_ssh']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ubuntu@13.51.162.118 "
-                            if ! command -v docker &> /dev/null; then
-                                echo 'Docker is not installed. Installing...';
-                                sudo apt update && sudo apt install -y docker.io;
-                                sudo systemctl start docker;
-                                sudo systemctl enable docker;
-                                sudo usermod -aG docker ubuntu;
-                            else
-                                echo 'Docker is already installed on EC2.';
-                                docker --version;
-                            fi"
-                    '''
                 }
             }
         }
 
         stage('Clone Repository') {
             steps {
-                git branch: 'main', url: 'https://github.com/ThashmikaX/chatapplication-backend-new'
+                git branch: 'main', url: 'https://github.com/ThashmikaX/chatapplication-backend-new.git'
             }
         }
-
-        
 
         stage('Build Docker Image') {
             steps {
                 script {
-                    echo 'Building Docker image...'
+                    echo 'Building Docker image in WSL...'
                     if (fileExists('Dockerfile')) {
-                        sh 'docker build --platform linux/amd64 -t virajsamarasinghe/backend1:latest .'
+                        sh '''
+                            set -e
+                            docker build --platform linux/amd64 -t thashmika/backend1:latest .
+                        '''
                     } else {
-                        error "Dockerfile not found in the repository."
+                        error 'Dockerfile not found in the repository.'
                     }
                 }
             }
@@ -62,10 +58,15 @@ pipeline {
 
         stage('Login to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: '17c557a3-d03f-4d55-95de-d30503ff06da', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-                    script {
-                        sh 'echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin'
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: '729ffe19-b9e0-43e7-8777-1d8c07af99bc',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        set +x
+                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                    '''
                 }
             }
         }
@@ -74,29 +75,42 @@ pipeline {
             steps {
                 script {
                     echo 'Pushing Docker image to Docker Hub...'
-                    if (sh(script: 'docker images -q virajsamarasinghe/backend1:latest', returnStatus: true) == 0) {
+                    def imageId = sh(
+                        script: 'docker images -q thashmika/backend1:latest',
+                        returnStdout: true
+                    ).trim()
+
+                    if (imageId) {
                         retry(3) {
-                            sh 'docker push virajsamarasinghe/backend1:latest'
+                            sh 'docker push thashmika/backend1:latest'
                         }
                     } else {
-                        error "Docker image not found. Build step might have failed."
+                        error 'Docker image not found. Build step might have failed.'
                     }
                 }
             }
         }
 
-        stage('Deploy to EC2') {
+        stage('Deploy Locally (WSL)') {
             steps {
-                sshagent(['aws1_ec2_ssh']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ubuntu@13.51.162.118 "
-                            sudo docker pull virajsamarasinghe/backend1:latest && \
-                            sudo docker stop backend || true && \
-                            sudo docker rm -f backend || true && \
-                            sudo docker run -d --name backend -p 5000:5000 virajsamarasinghe/backend1:latest"
-                    '''
-                }
+                sh '''
+                    docker stop backend || true
+                    docker rm -f backend || true
+                    docker run -d --name backend -p 5000:5000 --restart unless-stopped thashmika/backend1:latest
+                '''
             }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker logout || true'
+        }
+        success {
+            echo 'Pipeline completed successfully.'
+        }
+        failure {
+            echo 'Pipeline failed.'
         }
     }
 }
