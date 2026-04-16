@@ -38,7 +38,7 @@ const messageSchema = new mongoose.Schema({
     message: String,
     status: String,
     senderId: String,
-    timestamp: { type: Date, default: Date.now }
+    // timestamp: { type: Date, default: Date.now }
 });
 
 const Message = mongoose.model('Message', messageSchema);
