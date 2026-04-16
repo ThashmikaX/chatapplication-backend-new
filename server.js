@@ -37,6 +37,7 @@ const messageSchema = new mongoose.Schema({
     receiverName: String,
     message: String,
     status: String,
+    test: "test",
     timestamp: { type: Date, default: Date.now }
 });
 
